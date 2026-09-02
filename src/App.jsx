@@ -381,14 +381,23 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
 }
 
+function localDateStr(d) {
+  // YYYY-MM-DD in the clinic's local timezone (toISOString would use UTC,
+  // which files evening/early-morning entries under the wrong day).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateStr(new Date());
 }
 
 function addDaysStr(dateStr, n) {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 
 function fmtDate(d) {
@@ -439,8 +448,10 @@ function reminderMessage(appt) {
 }
 
 async function safeGetJSON(key, shared, fallback) {
+  // Network/auth failures propagate to the caller (so a connection problem is
+  // NOT mistaken for "no data yet"); only unparseable stored values fall back.
+  const res = await window.storage.get(key, shared);
   try {
-    const res = await window.storage.get(key, shared);
     return res ? JSON.parse(res.value) : fallback;
   } catch {
     return fallback;
@@ -459,6 +470,7 @@ export default function App({ role = "reception", userEmail = "" }) {
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   const [appointments, setAppointments] = useState([]);
   const [collectionsLog, setCollectionsLog] = useState([]);
@@ -487,6 +499,7 @@ export default function App({ role = "reception", userEmail = "" }) {
 
   useEffect(() => {
     (async () => {
+      try {
       const [p, a, c, h, sn] = await Promise.all([
         safeGetJSON("patients-index", true, []),
         safeGetJSON("appointments-index", true, []),
@@ -509,6 +522,10 @@ export default function App({ role = "reception", userEmail = "" }) {
       setHistoryLog(h);
       historyRef.current = h;
       setStaffName(sn || "");
+      setLoadError(false);
+      } catch {
+        setLoadError(true);
+      }
       setLoading(false);
     })();
   }, []);
@@ -604,6 +621,29 @@ export default function App({ role = "reception", userEmail = "" }) {
     const updated = { ...existing, name: form.name.trim(), age: form.age, phone: form.phone.trim(), email: form.email.trim() };
     await savePatient(updated);
     await saveIndex(patients.map((p) => (p.id === updated.id ? { id: p.id, name: updated.name, age: updated.age, phone: updated.phone } : p)));
+
+    // Propagate the new name/phone to this patient's appointments (they keep a
+    // copy for display + WhatsApp links, which otherwise goes stale after edits).
+    if (appointmentsRef.current.some((a) => a.patientId === updated.id && (a.patientName !== updated.name || a.phone !== updated.phone))) {
+      await saveAppointments(
+        appointmentsRef.current.map((a) =>
+          a.patientId === updated.id ? { ...a, patientName: updated.name, phone: updated.phone } : a
+        )
+      );
+    }
+
+    // Same for the collections log, which shows the patient's name per payment.
+    if (collectionsRef.current.some((c) => c.patientId === updated.id && c.patientName !== updated.name)) {
+      const newLog = collectionsRef.current.map((c) =>
+        c.patientId === updated.id ? { ...c, patientName: updated.name } : c
+      );
+      collectionsRef.current = newLog;
+      setCollectionsLog(newLog);
+      try {
+        await window.storage.set("collections-log", JSON.stringify(newLog), true);
+      } catch {}
+    }
+
     setSaving(false);
     setEditPatient(null);
     showToast("Details updated");
@@ -617,6 +657,13 @@ export default function App({ role = "reception", userEmail = "" }) {
       await window.storage.delete(`patient:${id}`, true);
     } catch {}
     await saveIndex(patients.filter((p) => p.id !== id));
+
+    // Remove the patient's appointments too — otherwise they linger in
+    // Today/Reminders with working WhatsApp buttons for a deleted patient.
+    if (appointmentsRef.current.some((a) => a.patientId === id)) {
+      await saveAppointments(appointmentsRef.current.filter((a) => a.patientId !== id));
+    }
+
     setCache((prev) => {
       const c = { ...prev };
       delete c[id];
@@ -826,6 +873,24 @@ export default function App({ role = "reception", userEmail = "" }) {
   return (
     <div className="derp">
       <style>{FONTS + CSS}</style>
+
+      {loadError && (
+        <div
+          style={{
+            background: "var(--bad-tint)", color: "var(--bad)", border: "1px solid var(--bad)",
+            borderRadius: "var(--radius)", padding: "12px 16px", margin: "12px 16px 0",
+            display: "flex", alignItems: "center", gap: 10, fontWeight: 600, fontSize: 14
+          }}
+        >
+          <AlertCircle size={18} />
+          <span style={{ flex: 1 }}>
+            Couldn't load clinic data — check your internet connection. Don't re-enter records; they are safe on the server.
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="derp-header">
         <div className="derp-brand">

@@ -73,3 +73,33 @@ The original supplied ERP stores prescription photos as compressed base64 inside
 For a production dental/medical system, the next upgrade should move prescription images to **Supabase Storage** and keep only secure file paths in the database. It is also advisable to add individual staff accounts and permissions rather than sharing one password if more than one person will operate the clinic system.
 
 The clinic login is intentionally not embedded in the code.
+
+## Bug fixes applied (2026-08-30)
+
+All four verified with automated browser tests before shipping (5/5 passing).
+
+1. **Phone/name edits now propagate to appointments and collections.**
+   Appointments keep a copy of the patient's name and phone for display and
+   WhatsApp reminder links. Previously, editing a patient updated only their
+   record — existing appointments kept the old number, so reminders went to
+   the wrong phone. Saving a patient edit now rewrites that patient's
+   appointments and their name in the collections log.
+
+2. **Deleting a patient now removes their appointments too.**
+   Previously the patient disappeared but their scheduled appointments stayed
+   in Today/Reminders as "ghosts" with a working Send Reminder button. The
+   delete now cleans up appointments by patientId, matching the confirm
+   dialog's promise. (Their collections history is intentionally kept for
+   accounting.)
+
+3. **Dates are now computed in local time, not UTC.**
+   "Today" used to flip at 5:30 AM IST, so early-morning entries were filed
+   under yesterday — skewing the Today tab, the 3-day reminder window, Daily
+   Collections totals and the Excel export. All date strings are now built
+   from the clinic's local timezone.
+
+4. **A connection failure no longer looks like an empty clinic.**
+   If Supabase is unreachable (bad network, or a paused free-tier project),
+   the app used to show "No patients yet" — inviting staff to re-enter
+   patients as duplicates. It now shows a red warning banner ("Couldn't load
+   clinic data — don't re-enter records") with a Retry button.
